@@ -114,6 +114,8 @@ function App() {
     setFiles([]);
     setStatus(AppState.IDLE);
     setCurrentView('landing');
+    // Force page reload to ensure clean logout state
+    window.location.reload();
   };
 
   const handleNewPaper = () => {
@@ -278,8 +280,8 @@ function App() {
               <button
                 onClick={() => setCurrentView('dashboard')}
                 className={`flex items-center gap-2 px-3 py-2 rounded-lg transition-colors text-sm font-medium ${currentView === 'dashboard'
-                    ? 'bg-indigo-50 text-indigo-700'
-                    : 'text-gray-600 hover:bg-gray-100'
+                  ? 'bg-indigo-50 text-indigo-700'
+                  : 'text-gray-600 hover:bg-gray-100'
                   }`}
                 title="View Dashboard"
               >
