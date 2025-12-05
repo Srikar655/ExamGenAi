@@ -49,7 +49,11 @@ function App() {
   const [config, setConfig] = useState<SchoolConfig>(() => loadState('examGenConfig', DEFAULT_CONFIG));
 
   // --- NAVIGATION STATE ---
-  const [currentView, setCurrentView] = useState<'landing' | 'auth' | 'dashboard' | 'editor'>('landing');
+  const [currentView, setCurrentView] = useState<'landing' | 'auth' | 'dashboard' | 'editor'>(() => {
+    // Restore view from localStorage if available
+    const saved = localStorage.getItem('examGen_currentView');
+    return (saved as 'landing' | 'auth' | 'dashboard' | 'editor') || 'landing';
+  });
   const [showFeedback, setShowFeedback] = useState(false);
   const [remainingTrials, setRemainingTrials] = useState<number | null>(null);
   const [trialCheckLoading, setTrialCheckLoading] = useState(false);
@@ -61,8 +65,11 @@ function App() {
       setAuthLoading(false);
       if (session?.user?.id) {
         fetchRemainingTrials(session.user.id);
-        // After login, go to dashboard
-        setCurrentView('dashboard');
+        // Only set to dashboard if no saved view or if on landing/auth
+        const savedView = localStorage.getItem('examGen_currentView');
+        if (!savedView || savedView === 'landing' || savedView === 'auth') {
+          setCurrentView('dashboard');
+        }
       } else {
         // Not logged in, show landing page
         setCurrentView('landing');
@@ -74,8 +81,8 @@ function App() {
       setAuthLoading(false);
       if (session?.user?.id) {
         fetchRemainingTrials(session.user.id);
-        // After login, go to dashboard
-        setCurrentView('dashboard');
+        // Don't change view here - it's handled in the initial session check
+        // This listener is just for updating session state
       } else {
         // Logged out, show landing page
         setCurrentView('landing');
@@ -97,6 +104,11 @@ function App() {
 
   // --- PERSISTENCE ---
   useEffect(() => { localStorage.setItem('examGenConfig', JSON.stringify(config)); }, [config]);
+
+  // Persist current view
+  useEffect(() => {
+    localStorage.setItem('examGen_currentView', currentView);
+  }, [currentView]);
 
   useEffect(() => {
     if (paperData) {
