@@ -4,7 +4,7 @@ import {
     Image as ImageIcon, GripVertical, RotateCcw, MousePointerClick, 
     LayoutList, LayoutGrid, Grid3X3, Plus, Minus, Hash,
     Maximize2, ArrowLeftRight, ArrowUpDown, ChevronLeft, ChevronRight,
-    PenTool
+    PenTool, Trash2, Heading, ArrowDownToLine // Added new icons
 } from 'lucide-react';
 
 // IMPORT YOUR EDITOR
@@ -25,6 +25,16 @@ type LayoutMode = 'list' | 'grid-2' | 'grid-3';
 type NumberingMode = 'continuous' | 'per_section';
 type SizeMode = 'sm' | 'md' | 'lg';
 type DensityMode = 'compact' | 'standard' | 'relaxed';
+
+// --- HELPER: ROMAN NUMERALS ---
+const toRoman = (num: number) => {
+    const lookup: Record<string, number> = {M:1000,CM:900,D:500,CD:400,C:100,XC:90,L:50,XL:40,X:10,IX:9,V:5,IV:4,I:1};
+    let roman = '';
+    for (let i in lookup) {
+      while ( num >= lookup[i] ) { roman += i; num -= lookup[i]; }
+    }
+    return roman;
+};
 
 // --- COMPONENT: INLINE EDIT ---
 const InlineEdit = ({ value, onSave, className = "", multiline = false }: { value: string, onSave: (val: string) => void, className?: string, multiline?: boolean }) => {
@@ -102,16 +112,98 @@ export const PaperRenderer: React.FC<PaperRendererProps> = ({ config, data, onUp
   const [tableRowHeights, setTableRowHeights] = useState<Record<string, Record<number, number>>>({});
   const [tableDensities, setTableDensities] = useState<Record<string, DensityMode>>({});
 
-  // NEW: State for the Diagram Editor Modal
+  // Diagram Editor State
   const [editingDiagram, setEditingDiagram] = useState<{
       sIdx: number;
       qIdx: number;
-      pIdx: number; // -1 for reference
+      pIdx: number; 
       content: string;
       isReference: boolean;
   } | null>(null);
 
   if (!data || !data.sections) return null;
+
+  // --- DELETE HANDLERS ---
+  const deleteSection = (sIdx: number) => {
+    if(!window.confirm("Are you sure you want to delete this entire section?")) return;
+    const newData = JSON.parse(JSON.stringify(data));
+    newData.sections.splice(sIdx, 1);
+    const renumbered = renumberQuestions(newData, numberingMode);
+    onUpdateData(renumbered);
+  };
+
+  const deleteQuestion = (sIdx: number, qIdx: number) => {
+    const newData = JSON.parse(JSON.stringify(data));
+    newData.sections[sIdx].questions.splice(qIdx, 1);
+    const renumbered = renumberQuestions(newData, numberingMode);
+    onUpdateData(renumbered);
+  };
+
+  // --- RESTRUCTURE HANDLERS (NEW) ---
+  
+  // 1. Demote Section: Turns a Section Heading into a regular instruction inside the previous section
+  const handleDemoteSection = (sIdx: number) => {
+      if (sIdx === 0) return; // Cannot demote the first section (nothing before it)
+      if (!window.confirm("Merge this section into the previous one? The heading will become normal text.")) return;
+
+      const newData = JSON.parse(JSON.stringify(data));
+      const currentSec = newData.sections[sIdx];
+      const prevSec = newData.sections[sIdx - 1];
+
+      // Convert heading to a text-only question
+      const headingAsQuestion: Question = {
+          question_number: "", // No number for instruction
+          content_parts: [{ type: 'text', value: currentSec.heading }],
+          answer_type: 'none',
+          options: [],
+          answer_lines: 0
+      };
+
+      // Push heading-as-question first, then all existing questions
+      prevSec.questions.push(headingAsQuestion);
+      if (currentSec.questions && currentSec.questions.length > 0) {
+          prevSec.questions.push(...currentSec.questions);
+      }
+
+      // Remove the old section
+      newData.sections.splice(sIdx, 1);
+      
+      const renumbered = renumberQuestions(newData, numberingMode);
+      onUpdateData(renumbered);
+  };
+
+  // 2. Promote Question: Turns a Question into a New Section Heading
+  const handlePromoteQuestion = (sIdx: number, qIdx: number) => {
+      const newData = JSON.parse(JSON.stringify(data));
+      const sourceSec = newData.sections[sIdx];
+      const questionToPromote = sourceSec.questions[qIdx];
+
+      // Use the first text part as the new heading
+      let newHeadingText = "New Section";
+      if (questionToPromote.content_parts && questionToPromote.content_parts[0]?.type === 'text') {
+          newHeadingText = questionToPromote.content_parts[0].value;
+      }
+
+      // Questions to move to the new section (everything after the promoted one)
+      const movingQuestions = sourceSec.questions.slice(qIdx + 1);
+
+      // Create the new section
+      const newSection = {
+          heading: newHeadingText,
+          questions: movingQuestions,
+          section_type: "general",
+          marks: ""
+      };
+
+      // Remove promoted question and subsequent questions from old section
+      sourceSec.questions = sourceSec.questions.slice(0, qIdx);
+
+      // Insert new section
+      newData.sections.splice(sIdx + 1, 0, newSection);
+
+      const renumbered = renumberQuestions(newData, numberingMode);
+      onUpdateData(renumbered);
+  };
 
   // --- SIZE HELPERS ---
   const setSpecificSize = (key: string, size: SizeMode) => setItemSizes(prev => ({ ...prev, [key]: size }));
@@ -251,7 +343,6 @@ export const PaperRenderer: React.FC<PaperRendererProps> = ({ config, data, onUp
       const { sIdx, qIdx, pIdx, isReference } = editingDiagram;
       const newData = JSON.parse(JSON.stringify(data));
       
-      // Update data based on where it came from
       if (isReference) {
           newData.sections[sIdx].questions[qIdx].content_parts[pIdx].reference.value = newContent;
           newData.sections[sIdx].questions[qIdx].content_parts[pIdx].reference.type = 'svg'; 
@@ -273,7 +364,6 @@ export const PaperRenderer: React.FC<PaperRendererProps> = ({ config, data, onUp
 
   // --- RENDERERS ---
   
-  // 1. Render Reference (Float Left) with Edit Button
   const renderReference = (ref: { type: 'image' | 'svg', value: string }, uniqueKey: string, sIdx: number, qIdx: number, pIdx: number) => {
     const sizeStyle = getSizeClass(uniqueKey, 'reference');
     let content = null;
@@ -299,17 +389,9 @@ export const PaperRenderer: React.FC<PaperRendererProps> = ({ config, data, onUp
     }
     return (
         <div className="float-left border border-gray-100 p-2 rounded bg-white mr-4 mb-2 break-inside-avoid relative group/ref" style={sizeStyle}>
-             {/* EDIT + RESIZE CONTROLS */}
              <div className="absolute top-1 right-1 z-10 opacity-0 group-hover/ref:opacity-100 transition-opacity no-print flex gap-1">
-                {/* EDIT BUTTON - ONLY FOR SVG */}
                 {ref.type === 'svg' && (
-                    <button 
-                        onClick={() => handleOpenEditor(sIdx, qIdx, pIdx, true, ref.value, ref.type, uniqueKey)} 
-                        className="bg-white/90 text-blue-600 p-1 rounded-full shadow border border-blue-200 hover:text-blue-800" 
-                        title="Edit Diagram"
-                    >
-                        <PenTool className="w-3 h-3" />
-                    </button>
+                    <button onClick={() => handleOpenEditor(sIdx, qIdx, pIdx, true, ref.value, ref.type, uniqueKey)} className="bg-white/90 text-blue-600 p-1 rounded-full shadow border border-blue-200 hover:text-blue-800" title="Edit Diagram"><PenTool className="w-3 h-3" /></button>
                 )}
                 <button onClick={() => toggleSize(uniqueKey)} className="bg-white/90 text-gray-600 p-1 rounded-full shadow border border-gray-200 hover:text-blue-600" title="Resize"><Maximize2 className="w-3 h-3" /></button>
             </div>
@@ -320,7 +402,6 @@ export const PaperRenderer: React.FC<PaperRendererProps> = ({ config, data, onUp
 
   const renderContentPart = (part: ContentPart, uniqueKey: string, sIdx: number, qIdx: number, pIdx: number) => {
     if (!part) return null;
-
     let contentElement: React.ReactNode = null;
 
     if (part.type === 'text') {
@@ -332,16 +413,12 @@ export const PaperRenderer: React.FC<PaperRendererProps> = ({ config, data, onUp
                 contentElement = <InlineEdit value={text} onSave={(val) => updateContentPart(sIdx, qIdx, pIdx, val)} className="mr-1 align-baseline text-sm leading-relaxed" multiline />;
              }
         }
-    }
-    
-    // 2. Render Inline Image
-    else if (part.type === 'image') {
+    } else if (part.type === 'image') {
         const state = getImageState(uniqueKey);
         const boxStyle = getSizeClass(uniqueKey, 'image');
         contentElement = (
             <div className="inline-flex flex-col items-center m-2 align-middle group/image relative break-inside-avoid">
                 <div className="absolute top-1 right-1 z-10 opacity-0 group-hover/image:opacity-100 transition-opacity no-print flex gap-1">
-                    {/* ONLY RESIZE BUTTON FOR IMAGES - NO EDIT */}
                     <button onClick={() => toggleSize(uniqueKey)} className="bg-white/90 text-gray-600 p-1 rounded-full shadow border border-gray-200 hover:text-blue-600" title="Toggle Size"><Maximize2 className="w-3 h-3" /></button>
                 </div>
                 {state.isDrawn ? (
@@ -360,9 +437,7 @@ export const PaperRenderer: React.FC<PaperRendererProps> = ({ config, data, onUp
                 )}
             </div>
         );
-    }
-    
-    else if (part.type === 'table' && part.table_data) {
+    } else if (part.type === 'table' && part.table_data) {
         const tableClass = getSizeClass(uniqueKey, 'table');
         const colWeights = tableColWeights[uniqueKey] || Array(part.table_data.headers.length).fill(1);
         const totalWeight = colWeights.reduce((a, b) => a + b, 0);
@@ -432,20 +507,11 @@ export const PaperRenderer: React.FC<PaperRendererProps> = ({ config, data, onUp
                 </div>
             </div>
         );
-    }
-    
-    // 3. Render Inline SVG with Edit Button
-    else if (part.type === 'svg') {
+    } else if (part.type === 'svg') {
         contentElement = (
             <div className="inline-block align-middle my-2 relative group/svg leading-none">
                 <div className="absolute -top-3 right-0 opacity-0 group-hover/svg:opacity-100 transition-opacity no-print z-10 flex gap-1">
-                    <button 
-                        onClick={() => handleOpenEditor(sIdx, qIdx, pIdx, false, part.value, 'svg', uniqueKey)}
-                        className="bg-white/90 text-blue-600 p-1 rounded-full shadow border border-blue-200 hover:text-blue-800" 
-                        title="Edit SVG"
-                    >
-                        <PenTool className="w-3 h-3" />
-                    </button>
+                    <button onClick={() => handleOpenEditor(sIdx, qIdx, pIdx, false, part.value, 'svg', uniqueKey)} className="bg-white/90 text-blue-600 p-1 rounded-full shadow border border-blue-200 hover:text-blue-800" title="Edit SVG"><PenTool className="w-3 h-3" /></button>
                 </div>
                 <span className="block leading-none" dangerouslySetInnerHTML={{ __html: part.value }} />
             </div>
@@ -456,9 +522,7 @@ export const PaperRenderer: React.FC<PaperRendererProps> = ({ config, data, onUp
         return (
             <div className="flow-root w-full">
                 {renderReference(part.reference, `${uniqueKey}-ref`, sIdx, qIdx, pIdx)}
-                <div className="leading-relaxed">
-                    {contentElement}
-                </div>
+                <div className="leading-relaxed">{contentElement}</div>
             </div>
         );
     }
@@ -569,6 +633,12 @@ export const PaperRenderer: React.FC<PaperRendererProps> = ({ config, data, onUp
                 return (
                     <div key={qIdx} className={`flex items-center justify-between py-2 border-b border-gray-100 last:border-0 group relative break-inside-avoid`} draggable onDragStart={() => handleDragStart(sIdx, qIdx)} onDragEnter={() => handleDragEnter(sIdx, qIdx)} onDragEnd={handleDragEnd} onDragOver={(e) => e.preventDefault()}>
                         <div className="absolute -left-4 top-1/2 -translate-y-1/2 text-gray-400 opacity-0 group-hover:opacity-100 cursor-move no-print"><GripVertical className="w-4 h-4" /></div>
+                        
+                        {/* DELETE MATCH ROW BUTTON */}
+                        <div className="absolute -right-8 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 no-print">
+                             <button onClick={() => deleteQuestion(sIdx, qIdx)} className="p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded" title="Delete Row"><Trash2 className="w-4 h-4" /></button>
+                        </div>
+
                         <div className="w-[45%] flex items-center justify-start gap-3 pr-2">
                             <span className="font-bold min-w-[20px] text-sm">{q.question_number}.</span>
                             <div className="flex-1">
@@ -628,17 +698,27 @@ export const PaperRenderer: React.FC<PaperRendererProps> = ({ config, data, onUp
       <div className="exam-content space-y-6">
         {data.sections?.map((section, sIdx) => {
           const currentLayout = sectionLayouts[sIdx] || 'list';
+          // Check if Roman numeral exists. If not, we'll display one.
+          const hasRomanPattern = /^[MCDXLIV]+\.?\s/.test(section.heading);
+          
           return (
-            <div key={sIdx}>
-              <div className="flex justify-between items-baseline mb-3 section-header group">
+            <div key={sIdx} className="relative group/section">
+              <div className="flex justify-between items-baseline mb-3 section-header">
                  <div className="flex items-center gap-4 flex-grow">
-                    <h3 className="font-bold text-lg uppercase tracking-wide flex-grow">
+                    <h3 className="font-bold text-lg uppercase tracking-wide flex-grow flex items-baseline">
+                        {!hasRomanPattern && <span className="mr-2 font-bold">{toRoman(sIdx + 1)}.</span>}
                         <InlineEdit value={section.heading} onSave={(val) => updateSectionHeading(sIdx, val)} className="font-bold uppercase" multiline={true} />
                     </h3>
-                    <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity no-print flex-shrink-0">
+                    <div className="flex gap-1 opacity-0 group-hover/section:opacity-100 transition-opacity no-print flex-shrink-0">
                         <button onClick={() => toggleLayout(sIdx, 'list')} className={`p-1 rounded ${currentLayout === 'list' ? 'bg-blue-100 text-blue-600' : 'bg-gray-100 text-gray-500'}`}><LayoutList className="w-4 h-4" /></button>
                         <button onClick={() => toggleLayout(sIdx, 'grid-2')} className={`p-1 rounded ${currentLayout === 'grid-2' ? 'bg-blue-100 text-blue-600' : 'bg-gray-100 text-gray-500'}`}><LayoutGrid className="w-4 h-4" /></button>
                         <button onClick={() => toggleLayout(sIdx, 'grid-3')} className={`p-1 rounded ${currentLayout === 'grid-3' ? 'bg-blue-100 text-blue-600' : 'bg-gray-100 text-gray-500'}`}><Grid3X3 className="w-4 h-4" /></button>
+                        
+                        {/* DEMOTE SECTION BUTTON */}
+                        <button onClick={() => handleDemoteSection(sIdx)} className="p-1 rounded bg-yellow-100 text-yellow-600 hover:bg-yellow-200 ml-2" title="Make Normal Text (Merge with previous)"><ArrowDownToLine className="w-4 h-4" /></button>
+
+                        {/* DELETE SECTION BUTTON */}
+                        <button onClick={() => deleteSection(sIdx)} className="p-1 rounded bg-red-100 text-red-600 hover:bg-red-200 ml-1" title="Delete Section"><Trash2 className="w-4 h-4" /></button>
                     </div>
                  </div>
                  <span className="font-bold text-sm whitespace-nowrap ml-4">{section.marks}</span>
@@ -651,6 +731,14 @@ export const PaperRenderer: React.FC<PaperRendererProps> = ({ config, data, onUp
                     {section.questions?.map((q, qIdx) => (
                       <div key={qIdx} className={`question-block relative group p-1 rounded transition-colors h-full ${draggedItem?.sIdx === sIdx && draggedItem?.qIdx === qIdx ? 'bg-gray-100 opacity-50' : 'hover:bg-gray-50'}`} draggable onDragStart={() => handleDragStart(sIdx, qIdx)} onDragEnter={() => handleDragEnter(sIdx, qIdx)} onDragEnd={handleDragEnd} onDragOver={(e) => e.preventDefault()}>
                         <div className="absolute -left-4 top-1 text-gray-400 opacity-0 group-hover:opacity-100 cursor-move no-print"><GripVertical className="w-4 h-4" /></div>
+                        
+                        <div className="absolute -right-8 top-1 opacity-0 group-hover:opacity-100 no-print flex flex-col gap-1">
+                             {/* PROMOTE QUESTION BUTTON */}
+                             <button onClick={() => handlePromoteQuestion(sIdx, qIdx)} className="p-2 text-indigo-400 hover:text-indigo-600 hover:bg-indigo-50 rounded" title="Make Section Heading"><Heading className="w-4 h-4" /></button>
+                             {/* DELETE QUESTION BUTTON */}
+                             <button onClick={() => deleteQuestion(sIdx, qIdx)} className="p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded" title="Delete Question"><Trash2 className="w-4 h-4" /></button>
+                        </div>
+
                         <div className="flex gap-2">
                             <div className="font-bold min-w-[24px] text-sm pt-0.5">{q.question_number}.</div>
                             <div className="flex-1">
